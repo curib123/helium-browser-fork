@@ -174,6 +174,20 @@ BUILD_DEPENDENCY_PATHS = (
     'third_party/typescript/',
 )
 
+# Android builds consume Java archives and metadata that desktop source
+# packaging removes. This is opt-in so existing desktop pruning is unchanged.
+ANDROID_DEPENDENCY_PATHS = (
+    'android_webview/',
+    'build/android/',
+    'chrome/android/',
+    'third_party/android_',
+    'third_party/angle/third_party/r8/',
+    'third_party/jdk/',
+    'third_party/libphonenumber/',
+    'third_party/r8/',
+)
+ANDROID_DEPENDENCY_SUFFIXES = ('.jar', '.aar')
+
 # Files that should be excluded when pruning contingent paths.
 KEEP_FILES = (
     'chrome/test/data/webui/i18n_process_css_test.html',
@@ -185,18 +199,26 @@ KEEP_FILES = (
 KEEP_SUFFIXES = ('.gn', '.gni', '.grd', '.grdp', '.isolate', '.pydeps')
 
 
-def prune_files(unpack_root, prune_list, keep_build_dependencies=False):
+def prune_files(unpack_root,
+                prune_list,
+                keep_build_dependencies=False,
+                keep_android_dependencies=False):
     """
     Delete files under unpack_root listed in prune_list. Returns an iterable of unremovable files.
 
     unpack_root is a pathlib.Path to the directory to be pruned
     prune_list is an iterable of files to be removed.
     keep_build_dependencies preserves build dependencies listed in prune_list.
+    keep_android_dependencies also preserves Android tools, Java archives, and metadata.
     """
     unremovable_files = set()
     for relative_file in prune_list:
-        if keep_build_dependencies and Path(relative_file).as_posix().startswith(
-                BUILD_DEPENDENCY_PATHS):
+        relative_path = Path(relative_file).as_posix()
+        if (keep_build_dependencies
+                or keep_android_dependencies) and relative_path.startswith(BUILD_DEPENDENCY_PATHS):
+            continue
+        if keep_android_dependencies and (relative_path.startswith(ANDROID_DEPENDENCY_PATHS)
+                                          or relative_path.endswith(ANDROID_DEPENDENCY_SUFFIXES)):
             continue
         file_path = unpack_root / relative_file
         try:
@@ -268,10 +290,13 @@ def _callback(args):
         sys.exit(1)
     if not args.pruning_list.exists():
         get_logger().error('Could not find the pruning list: %s', args.pruning_list)
-    prune_dirs(args.directory, args.keep_contingent_paths, args.sysroot,
-               args.keep_build_dependencies)
+    # The desktop contingent list includes chrome/android, Android platform
+    # sources, and the JDK. Keep it intact for an actual native Android build.
+    prune_dirs(args.directory, args.keep_contingent_paths or args.keep_android_dependencies,
+               args.sysroot, args.keep_build_dependencies)
     prune_list = tuple(filter(len, args.pruning_list.read_text(encoding=ENCODING).splitlines()))
-    unremovable_files = prune_files(args.directory, prune_list, args.keep_build_dependencies)
+    unremovable_files = prune_files(args.directory, prune_list, args.keep_build_dependencies,
+                                    args.keep_android_dependencies)
     if unremovable_files:
         file_list = '\n'.join(f for f in itertools.islice(unremovable_files, 5))
         if len(unremovable_files) > 5:
@@ -296,6 +321,11 @@ def main():
         '--keep-build-dependencies',
         action='store_true',
         help='Keep build dependencies, but prune other binaries and contingent paths.')
+    keep_options.add_argument(
+        '--keep-android-dependencies',
+        action='store_true',
+        help=('Keep contingent paths, native build dependencies, Android tools, '
+              'Java archives, and required Java metadata.'))
     parser.add_argument('--sysroot',
                         choices=('amd64', 'i386'),
                         help=('Skip pruning the sysroot for the specified architecture. '

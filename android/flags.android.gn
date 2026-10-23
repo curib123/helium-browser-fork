@@ -1,0 +1,23 @@
+# Experimental native Chromium APK, with the public development signing key.
+# Args were checked against Chromium 156.0.8078.47; gn gen also rejects unused args.
+target_os = "android"
+is_official_build = false
+is_debug = false
+is_component_build = false
+symbol_level = 1
+blink_symbol_level = 0
+v8_symbol_level = 0
+use_remoteexec = false
+
+# Supported in chrome/android/chrome_public_apk_tmpl.gni.
+chrome_public_manifest_package = "com.curibtech.helium"
+
+# Use only the SDK and public development key from the pinned source checkout.
+android_sdk_release = "public"
+debuggable_apks = true
+android_keystore_path = "//build/android/chromium-debug.keystore"
+android_keystore_name = "chromiumdebugkey"
+android_keystore_password = "chromium"
+
+# Complete analysis within the build, including on unattended local runners.
+android_static_analysis = "on"

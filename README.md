@@ -11,6 +11,17 @@
 </div>
 
 ## Downloads
+### Android development in this fork
+
+This fork includes an **experimental native Android port** for Curib Browser
+(`com.curibtech.helium`), using Chromium and Helium without Flutter.
+See [Android build instructions](android/README.md) and
+[validation status](android/VALIDATION.md).
+The build tooling is not a verified APK release; native compilation and
+Android device testing are still required.
+
+### Upstream desktop releases
+
 > [!NOTE]
 > Helium is in beta, so unexpected issues may occur.
 > Please report them if they haven't already been reported.
