@@ -11,6 +11,7 @@
 """Clone fresh Chromium sources and prepare their dependencies with gclient."""
 
 import os
+import platform
 import re
 import sys
 from argparse import ArgumentParser
@@ -35,6 +36,38 @@ def checkout(url, revision, destination, environment):
          str(destination), 'checkout', '--detach', '--force', 'FETCH_HEAD'],
         env=environment,
         check=True)
+
+
+def create_gclient_config(pgo, android=False, target_cpu=None):
+    """Select dependencies without changing the existing desktop defaults."""
+    target_os = 'win' if pgo.startswith('win') else pgo.split('-')[0]
+    targets = ['x64', 'arm64']
+    if pgo == 'win32':
+        targets.append('x86')
+    if android:
+        # Android builds also compile Linux host tools. Keep the host CPU when
+        # narrowing dependencies to the selected device architecture.
+        targets = list(dict.fromkeys(['x64', target_cpu or 'arm64']))
+    return {
+        'solutions': [{
+            'name': 'src',
+            'url': 'https://chromium.googlesource.com/chromium/src',
+            'managed': True,
+            'custom_vars': {
+                'checkout_configuration': 'small',
+                'checkout_pgo_profiles': not android,
+                'checkout_android': android,
+                'checkout_ios': False,
+                'checkout_chromeos': False,
+                'checkout_fuchsia': False,
+            },
+        }],
+        'target_os': ['android', 'linux'] if android else [target_os],
+        'target_os_only': True,
+        'target_cpu': targets,
+        'target_cpu_only': True,
+        'cache_dir': None,
+    }
 
 
 def clone(args):
@@ -71,42 +104,19 @@ def clone(args):
             'UC_OUT', 'src'),
                                encoding=ENCODING)
     else:
-        target_os = 'win' if args.pgo.startswith('win') else args.pgo.split('-')[0]
-        targets = ['x64', 'arm64']
-        if args.pgo == 'win32':
-            targets.append('x86')
-        config = {
-            'solutions': [{
-                'name': 'src',
-                'url': 'https://chromium.googlesource.com/chromium/src',
-                'managed': True,
-                'custom_vars': {
-                    'checkout_configuration': 'small',
-                    'checkout_pgo_profiles': True,
-                    'checkout_android': False,
-                    'checkout_ios': False,
-                    'checkout_chromeos': False,
-                    'checkout_fuchsia': False,
-                },
-            }],
-            'target_os': [target_os],
-            'target_os_only': True,
-            'target_cpu': targets,
-            'target_cpu_only': True,
-            'cache_dir': None,
-        }
+        config = create_gclient_config(args.pgo, args.android, args.target_cpu)
         config_file.write_text(''.join(f'{key} = {value!r}\n' for key, value in config.items()),
                                encoding=ENCODING)
     environment['GCLIENT_FILE'] = str(config_file)
     gclient = depot / ('gclient.bat' if sys.platform == 'win32' else 'gclient')
     command = ['cmd.exe', '/d', '/c', str(gclient)] if sys.platform == 'win32' else [str(gclient)]
-    run(command + [
+    sync_args = [
         'sync', '--no-history', '--force', '--reset', '--delete_unversioned_trees', '--revision',
         'src@' + revision
-    ],
-        cwd=root,
-        env=environment,
-        check=True)
+    ]
+    if args.nohooks:
+        sync_args.append('--nohooks')
+    run(command + sync_args, cwd=root, env=environment, check=True)
     get_logger().info('source cloning complete')
 
 
@@ -122,7 +132,11 @@ def main():
                         '--custom-config',
                         type=Path,
                         help='Replacement gclient configuration.')
-    parser.add_argument('-p',
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument('--android',
+                        action='store_true',
+                        help='Fetch Android dependencies and Linux host tools (Linux x64 only).')
+    target.add_argument('-p',
                         '--pgo',
                         default={
                             'linux': 'linux',
@@ -131,9 +145,21 @@ def main():
                         }[sys.platform],
                         choices=('linux', 'mac', 'mac-arm', 'win32', 'win64', 'win-arm64'),
                         help='Target platform for dependencies and PGO profiles.')
+    parser.add_argument('--target-cpu',
+                        choices=('arm64', 'arm', 'x64', 'x86'),
+                        help='Android device architecture; requires --android (default: arm64).')
+    parser.add_argument('--nohooks',
+                        action='store_true',
+                        help='Defer Chromium hooks until host build dependencies are installed.')
     parser.add_argument('--dt-commit', help='Override the depot_tools revision from DEPS.')
     add_common_params(parser)
     args = parser.parse_args()
+    if args.target_cpu and not args.android:
+        parser.error('--target-cpu requires --android')
+    if args.android and args.custom_config:
+        parser.error('--android cannot be combined with --custom-config')
+    if args.android and (sys.platform != 'linux' or platform.machine() not in ('x86_64', 'AMD64')):
+        parser.error('Android builds require an x86-64 Linux host')
     if args.output.resolve().name != 'src':
         parser.error('the output directory must be named src for gclient hooks')
     if args.output.exists() and (not args.output.is_dir() or any(args.output.iterdir())):

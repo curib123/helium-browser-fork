@@ -1,0 +1,114 @@
+name: Native Android port
+
+on:
+  push:
+    branches: ['android/**', main]
+    paths:
+      - 'android/**'
+      - 'utils/**'
+      - 'patches/**'
+      - 'flags.gn'
+      - '*version.txt'
+      - 'revision.txt'
+      - 'deps.ini'
+      - '.github/workflows/android.yml'
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'utils/**'
+      - 'patches/**'
+      - 'flags.gn'
+      - '*version.txt'
+      - 'revision.txt'
+      - 'deps.ini'
+      - '.github/workflows/android.yml'
+  workflow_dispatch:
+    inputs:
+      build_apk:
+        description: 'Compile on your provisioned chromium-android runner'
+        type: boolean
+        default: false
+      target_cpu:
+        description: 'Android device architecture'
+        type: choice
+        options: [arm64, arm, x64, x86]
+        default: arm64
+      jobs:
+        description: 'Maximum concurrent compile jobs'
+        type: string
+        default: '2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-android-${{ github.workflow }}-${{ github.ref }}-${{ inputs.target_cpu }}
+  cancel-in-progress: false
+
+jobs:
+  tooling:
+    name: Test Android tooling (does not compile an APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: .requirements.txt
+      - name: Install Python dependencies
+        run: python -m pip install -r .requirements.txt
+      - name: Test source checkout and existing utilities
+        working-directory: utils
+        run: python -m pytest -q
+      - name: Test existing development utilities
+        working-directory: devutils
+        run: python -m pytest -q
+      - name: Test Android build state, verification, and branding
+        run: python -m unittest discover -s android/tests -v
+      - name: Validate patch series and repository configuration
+        run: |
+          python devutils/validate_config.py
+          python devutils/lint.py
+      - name: Inspect planned native build without downloading Chromium
+        run: python android/build.py build --dry-run
+
+  apk:
+    name: Experimental native APK
+    needs: tooling
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.build_apk &&
+      github.repository == 'curib123/helium-browser-fork'
+    runs-on: [self-hosted, Linux, X64, chromium-android]
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+      - name: Install Python dependencies
+        run: python -m pip install -r .requirements.txt
+      - name: Preflight provisioned build machine
+        env:
+          ANDROID_PORT_CPU: ${{ inputs.target_cpu }}
+        run: python android/build.py doctor --target-cpu "$ANDROID_PORT_CPU"
+      - name: Build and verify development APK
+        env:
+          ANDROID_PORT_CPU: ${{ inputs.target_cpu }}
+          ANDROID_PORT_JOBS: ${{ inputs.jobs }}
+        run: >-
+          python android/build.py build
+          --target-cpu "$ANDROID_PORT_CPU"
+          --jobs "$ANDROID_PORT_JOBS"
+      - name: Upload verified development APK and manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: curib-browser-android-${{ inputs.target_cpu }}-${{ github.sha }}
+          path: build/android/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
